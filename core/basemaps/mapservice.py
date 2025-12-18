@@ -672,42 +672,27 @@ class MapService():
 		buffSize : maximum number of tiles keeped in memory before put them in cache database
 		"""
 
-		def downloading(laykey, tilesQueue, tilesData, toDstGrid):
-			'''Worker that process the queue and seed tilesData array [(x,y,z,data)]'''
-			#infinite loop that processes items into the queue
-			while not tilesQueue.empty(): #empty is True if all item was get but it not tell if all task was done
-				#cancel thread if requested
-				if not self.running:
-					break
-				#Get a job into the queue
-				col, row, zoom = tilesQueue.get() #get() pop the item from queue
-				#do the job
+		# Use improved thread pool with cancellation and timeouts
+		from ..utils.threading_utils import CancellableThreadPool
+
+		def download_worker(tile_spec, laykey, toDstGrid, cache):
+			"""Download single tile and write to cache immediately."""
+			col, row, zoom = tile_spec
+			if not self.running:
+				return None
+			try:
 				data = self.tileRequest(laykey, col, row, zoom, toDstGrid)
 				if data is not None:
-					tilesData.put( (col, row, zoom, data) ) #will block if the queue is full
+					# Write directly to cache to avoid large in-memory buffers
+					with self.lock:
+						cache.putTiles([(col, row, zoom, data)])
 				if cpt:
 					self.cptTiles += 1
-				#self.nTaskDone += 1
-				#flag it's done
-				tilesQueue.task_done() #it's just a count of finished tasks used by join() to know if the work is finished
-
-		def finished():
-			#return self.nTaskDone == nMissing
-			#self.nTaskDone is not reliable because the recursive call to getImage will
-			#start multiple threads to seedTiles() and all these process will increments nTaskDone
-			return not any([t.is_alive() for t in threads])
-
-		def putInCache(tilesData, jobs, cache):
-			while True:
-				if tilesData.full() or \
-				( (finished() or not self.running) and not tilesData.empty()):
-					data = [tilesData.get() for i in range(tilesData.qsize())]
-					with self.lock:
-						cache.putTiles(data)
-				if finished() and tilesData.empty():
-					break
-				if not self.running:
-					break
+			except Exception as e:
+				log.warning('Tile download failed (%d,%d,%d): %s', col, row, zoom, str(e))
+				if cpt:
+					self.cptTiles += 1
+			return None
 
 		if cpt:
 			#init cpt progress
@@ -731,31 +716,23 @@ class MapService():
 		if cpt:
 			self.status = 2
 		if len(missing) > 0:
+			# Cap workers to 5 to prevent resource exhaustion
+			nbThread = min(nbThread, 5)
+			pool = CancellableThreadPool(max_workers=nbThread, timeout=30)
 
-			#Result queue
-			tilesData = queue.Queue(maxsize=buffSize)
+			# Submit all download tasks
+			for tile_spec in missing:
+				pool.submit_task(download_worker, tile_spec, laykey, toDstGrid, cache)
 
-			#Seed the queue
-			jobs = queue.Queue()
-			for tile in missing:
-				jobs.put(tile)
+			# Progress callback with cancellation support
+			def progress_cb(completed, total):
+				if not self.running:
+					pool.cancel()
 
-			#Launch threads
-			threads = []
-			for i in range(nbThread):
-				t = threading.Thread(target=downloading, args=(laykey, jobs, tilesData, toDstGrid))
-				t.setDaemon(True)
-				threads.append(t)
-				t.start()
-
-			seeder = threading.Thread(target=putInCache, args=(tilesData, jobs, cache))
-			seeder.setDaemon(True)
-			seeder.start()
-			seeder.join()
-
-			#Make sure all threads has finished
-			for t in threads:
-				t.join()
+			try:
+				pool.wait_completion(callback_progress=progress_cb)
+			except RuntimeError as e:
+				log.warning('Tile seeding cancelled: %s', str(e))
 
 		#Reinit status and cpt progress
 		if cpt:
