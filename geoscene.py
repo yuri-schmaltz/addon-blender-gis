@@ -27,6 +27,7 @@ from bpy.types import Operator, Panel, PropertyGroup
 
 from .prefs import PredefCRS
 from .core.proj.reproj import reprojPt
+from .core.proj.geotransform import view3d_to_proj, proj_to_view3d, move_origin_prj
 from .core.proj.srs import SRS
 
 from .operators.utils import mouseTo3d
@@ -99,8 +100,7 @@ class GeoScene():
 	def view3dToProj(self, dx, dy):
 		'''Convert view3d coords to crs coords'''
 		if self.hasOriginPrj:
-			x = self.crsx + (dx * self.scale)
-			y = self.crsy + (dy * self.scale)
+			x, y = view3d_to_proj(self.crsx, self.crsy, self.scale, dx, dy)
 			return x, y
 		else:
 			raise Exception("Scene origin coordinate is unset")
@@ -108,8 +108,7 @@ class GeoScene():
 	def projToView3d(self, dx, dy):
 		'''Convert view3d coords to crs coords'''
 		if self.hasOriginPrj:
-			x = (dx * self.scale) - self.crsx
-			y = (dy * self.scale) - self.crsy
+			x, y = proj_to_view3d(self.crsx, self.crsy, self.scale, dx, dy)
 			return x, y
 		else:
 			raise Exception("Scene origin coordinate is unset")
@@ -205,10 +204,8 @@ class GeoScene():
 		if not self.hasOriginPrj:
 			raise Exception("Cannot move an unset origin.")
 
-		if useScale:
-			self.setOriginPrj(self.crsx + dx * self.scale, self.crsy + dy * self.scale, synch)
-		else:
-			self.setOriginPrj(self.crsx + dx, self.crsy + dy, synch)
+		x, y = move_origin_prj(self.crsx, self.crsy, dx, dy, self.scale, use_scale=useScale)
+		self.setOriginPrj(x, y, synch)
 
 		if updObjLoc:
 			self._moveObjLoc(dx, dy)
