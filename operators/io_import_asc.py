@@ -10,88 +10,62 @@ import string
 import logging
 log = logging.getLogger(__name__)
 
-from bpy_extras.io_utils import ImportHelper #helper class defines filename and invoke() function which calls the file selector
 from bpy.props import StringProperty, BoolProperty, EnumProperty, IntProperty
-from bpy.types import Operator
 
 from ..core.proj import Reproj
 from ..core.utils import XY
-from ..geoscene import GeoScene, georefManagerLayout
-from ..prefs import PredefCRS
+from ..geoscene import GeoScene
 
 from .utils import bpyGeoRaster as GeoRaster
 from .utils import placeObj, adjust3Dview, showTextures, addTexture, getBBOX
 from .utils import rasterExtentToMesh, geoRastUVmap, setDisplacer
+from .base_import import BaseImportOperator
 
 PKG, SUBPKG = __package__.split('.', maxsplit=1)
 
 
-class IMPORTGIS_OT_ascii_grid(Operator, ImportHelper):
+class IMPORTGIS_OT_ascii_grid(BaseImportOperator):
     """Import ESRI ASCII grid file"""
-    bl_idname = "importgis.asc_file"  # important since its how bpy.ops.importgis.asc is constructed (allows calling operator from python console or another script)
-    #bl_idname rules: must contain one '.' (dot) charactere, no capital letters, no reserved words (like 'import')
+    bl_idname = "importgis.asc_file"
     bl_description = 'Import ESRI ASCII grid with world file'
     bl_label = "Import ASCII Grid"
-    bl_options = {"UNDO"}
 
-    # ImportHelper class properties
+    # ImportHelper class properties (from BaseImportOperator)
     filter_glob: StringProperty(
         default="*.asc;*.grd",
         options={'HIDDEN'},
     )
 
-    # Raster CRS definition
-    def listPredefCRS(self, context):
-        return PredefCRS.getEnumItems()
-    fileCRS: EnumProperty(
-        name = "CRS",
-        description = "Choose a Coordinate Reference System",
-        items = listPredefCRS,
-    )
+    # CRS now comes from BaseImportOperator as 'import_crs'
 
-    # List of operator properties, the attributes will be assigned
-    # to the class instance from the operator settings before calling.
+    # Operator-specific properties
     importMode: EnumProperty(
-        name = "Mode",
-        description = "Select import mode",
-        items = [
+        name="Mode",
+        description="Select import mode",
+        items=[
             ('MESH', 'Mesh', "Create triangulated regular network mesh"),
             ('CLOUD', 'Point cloud', "Create vertex point cloud"),
         ],
     )
 
-    # Step makes point clouds with billions of points possible to read on consumer hardware
     step: IntProperty(
-        name = "Step",
-        description = "Only read every Nth point for massive point clouds",
-        default = 1,
-        min = 1
+        name="Step",
+        description="Only read every Nth point for massive point clouds",
+        default=1,
+        min=1
     )
 
-    # Let the user decide whether to use the faster newline method
-    # Alternatively, use self.total_newlines(filename) to see whether total >= nrows and automatically decide (at the cost of time spent counting lines)
     newlines: BoolProperty(
-        name = "Newline-delimited rows",
-        description = "Use this method if the file contains newline separated rows for faster import",
-        default = True,
+        name="Newline-delimited rows",
+        description="Use this method if the file contains newline separated rows for faster import",
+        default=True,
     )
 
-    def draw(self, context):
-        #Function used by blender to draw the panel.
-        layout = self.layout
+    def draw_operator_props(self, layout, context):
+        """Draw operator-specific UI properties."""
         layout.prop(self, 'importMode')
         layout.prop(self, 'step')
         layout.prop(self, 'newlines')
-
-        row = layout.row(align=True)
-        split = row.split(factor=0.35, align=True)
-        split.label(text='CRS:')
-        split.prop(self, "fileCRS", text='')
-        row.operator("bgis.add_predef_crs", text='', icon='ADD')
-        scn = bpy.context.scene
-        geoscn = GeoScene(scn)
-        if geoscn.isPartiallyGeoref:
-            georefManagerLayout(self, context)
 
 
     def total_lines(self, filename):
@@ -153,30 +127,35 @@ class IMPORTGIS_OT_ascii_grid(Operator, ImportHelper):
     def execute(self, context):
         prefs = context.preferences.addons[PKG].preferences
         bpy.ops.object.select_all(action='DESELECT')
-        #Get scene and some georef data
-        scn = bpy.context.scene
-        geoscn = GeoScene(scn)
+
+        # Get scene and validate georeferencing
+        geoscn = self.get_geoscene(context)
         if geoscn.isBroken:
-            self.report({'ERROR'}, "Scene georef is broken, please fix it beforehand")
+            self.report_error(self.report, "Scene georef is broken, please fix it beforehand")
             return {'CANCELLED'}
+
+        # Get origin if already georeferenced
         if geoscn.isGeoref:
             dx, dy = geoscn.getOriginPrj()
-        scale = geoscn.scale #TODO
-        if not geoscn.hasCRS:
-            try:
-                geoscn.crs = self.fileCRS
-            except Exception as e:
-                log.error("Cannot set scene crs", exc_info=True)
-                self.report({'ERROR'}, "Cannot set scene crs, check logs for more infos")
-                return {'CANCELLED'}
-
-        #build reprojector objects
-        if geoscn.crs != self.fileCRS:
-            rprj = True
-            rprjToRaster = Reproj(geoscn.crs, self.fileCRS)
-            rprjToScene = Reproj(self.fileCRS, geoscn.crs)
         else:
-            rprj = False
+            dx, dy = 0, 0
+        scale = geoscn.scale
+
+        # Sync scene CRS with import CRS
+        import_crs = self.get_crs()
+        try:
+            if not geoscn.hasCRS:
+                geoscn.crs = import_crs
+        except Exception as e:
+            self.report_error(self.report, f"Cannot set scene CRS: {e}")
+            return {'CANCELLED'}
+
+        # Build reprojector if CRS mismatch
+        rprj = geoscn.crs != import_crs
+        if rprj:
+            rprjToRaster = Reproj(geoscn.crs, import_crs)
+            rprjToScene = Reproj(import_crs, geoscn.crs)
+        else:
             rprjToRaster = None
             rprjToScene = None
 
