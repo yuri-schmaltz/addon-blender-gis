@@ -1,5 +1,7 @@
 import json
 import logging
+import re
+from urllib.parse import urlparse
 log = logging.getLogger(__name__)
 import sys, os
 
@@ -34,6 +36,46 @@ To edit the content of these enum, we just need to write new operators which wil
 As the json backend is stored in addon preferences, the property will be saved and restored for the next blender session
 '''
 
+
+# ============= VALIDATION HELPERS (QW-1: Input validation) =============
+
+def validate_crs(crs_string: str) -> tuple[bool, str]:
+	"""Validate CRS format (EPSG:XXXX or PROJ4 string)
+	Returns: (is_valid, error_message)
+	"""
+	if not crs_string or not isinstance(crs_string, str):
+		return False, "CRS cannot be empty"
+	
+	# Check EPSG format
+	if re.match(r'^EPSG:\d{4,5}$', crs_string):
+		return True, ""
+	
+	# Check PROJ4 format (basic validation)
+	if crs_string.startswith('+proj='):
+		return True, ""
+	
+	return False, f"Invalid CRS format '{crs_string}'. Expected EPSG:XXXX or PROJ4 string"
+
+
+def validate_url(url_string: str) -> tuple[bool, str]:
+	"""Validate URL format (http/https required)
+	Returns: (is_valid, error_message)
+	"""
+	if not url_string or not isinstance(url_string, str):
+		return False, "URL cannot be empty"
+	
+	try:
+		result = urlparse(url_string)
+		if result.scheme not in ('http', 'https'):
+			return False, f"Invalid scheme '{result.scheme}'. Use http:// or https://"
+		if not result.netloc:
+			return False, "Invalid URL: no domain found"
+		return True, ""
+	except Exception as e:
+		return False, f"Invalid URL: {str(e)}"
+
+
+# ============= DEFAULT DATA =============
 
 DEFAULT_CRS = [
 	('EPSG:3857', 'Web Mercator', 'Worldwide projection, high distortions, not suitable for precision modelling'),
@@ -652,23 +694,37 @@ class BGIS_OT_add_dem_server(Operator):
 	bl_label = "Add"
 	bl_options = {'INTERNAL'}
 
-	url: StringProperty(name = "Url template",  description = "Define url template string. Bounding box varaibles are {W}, {E}, {S} and {N}")
+	url: StringProperty(name = "Url template",  description = "Define url template string. Bounding box variables are {W}, {E}, {S} and {N}")
 	name: StringProperty(name = "Description", description = "Choose a convenient name for this server")
 	desc: StringProperty(name = "Description", description = "Add a description or comment about this remote datasource")
 
 	def invoke(self, context, event):
-		return context.window_manager.invoke_props_dialog(self)#, width=300)
+		return context.window_manager.invoke_props_dialog(self)
 
 	def execute(self, context):
 		templates = ['{W}', '{E}', '{S}', '{N}']
-		if all([t in self.url for t in templates]):
-			prefs = context.preferences.addons[PKG].preferences
-			data = json.loads(prefs.demServerJson)
-			data.append( (self.url, self.name, self.desc) )
-			prefs.demServerJson = json.dumps(data)
-			context.area.tag_redraw()
-		else:
-			self.report({'ERROR'}, 'Invalid URL')
+		
+		# Validate URL format
+		is_valid_url, url_error = validate_url(self.url)
+		if not is_valid_url:
+			self.report({'ERROR'}, f"Invalid URL: {url_error}")
+			return {'CANCELLED'}
+		
+		# Validate template variables
+		if not all([t in self.url for t in templates]):
+			self.report({'ERROR'}, f'Invalid URL template. Required variables: {", ".join(templates)}')
+			return {'CANCELLED'}
+		
+		# Validate name
+		if not self.name.strip():
+			self.report({'ERROR'}, 'Server name cannot be empty')
+			return {'CANCELLED'}
+		
+		prefs = context.preferences.addons[PKG].preferences
+		data = json.loads(prefs.demServerJson)
+		data.append((self.url, self.name, self.desc))
+		prefs.demServerJson = json.dumps(data)
+		context.area.tag_redraw()
 		return {'FINISHED'}
 
 class BGIS_OT_rmv_dem_server(Operator):
@@ -708,7 +764,7 @@ class BGIS_OT_edit_dem_server(Operator):
 	bl_label = "Edit"
 	bl_options = {'INTERNAL'}
 
-	url: StringProperty(name = "Url template",  description = "Define url template string. Bounding box varaibles are {W}, {E}, {S} and {N}")
+	url: StringProperty(name = "Url template",  description = "Define url template string. Bounding box variables are {W}, {E}, {S} and {N}")
 	name: StringProperty(name = "Description", description = "Choose a convenient name for this server")
 	desc: StringProperty(name = "Description", description = "Add a description or comment about this remote datasource")
 
@@ -727,13 +783,27 @@ class BGIS_OT_edit_dem_server(Operator):
 		key = prefs.demServer
 		data = json.loads(prefs.demServerJson)
 		templates = ['{W}', '{E}', '{S}', '{N}']
-		if all([t in self.url for t in templates]):
-			data = [entry for entry in data if entry[0] != key] #deleting
-			data.append((self.url, self.name, self.desc))
-			prefs.demServerJson = json.dumps(data)
-			context.area.tag_redraw()
-		else:
-			self.report({'ERROR'}, 'Invalid URL')
+		
+		# Validate URL format
+		is_valid_url, url_error = validate_url(self.url)
+		if not is_valid_url:
+			self.report({'ERROR'}, f"Invalid URL: {url_error}")
+			return {'CANCELLED'}
+		
+		# Validate template variables
+		if not all([t in self.url for t in templates]):
+			self.report({'ERROR'}, f'Invalid URL template. Required variables: {", ".join(templates)}')
+			return {'CANCELLED'}
+		
+		# Validate name
+		if not self.name.strip():
+			self.report({'ERROR'}, 'Server name cannot be empty')
+			return {'CANCELLED'}
+		
+		data = [entry for entry in data if entry[0] != key]  # Remove old
+		data.append((self.url, self.name, self.desc))
+		prefs.demServerJson = json.dumps(data)
+		context.area.tag_redraw()
 		return {'FINISHED'}
 
 #################

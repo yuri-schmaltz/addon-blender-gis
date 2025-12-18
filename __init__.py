@@ -128,10 +128,9 @@ threading.Thread.__init__ = init
 ####
 
 
-import ssl
-if (not os.environ.get('PYTHONHTTPSVERIFY', '') and
-	getattr(ssl, '_create_unverified_context', None)):
-	ssl._create_default_https_context = ssl._create_unverified_context
+# SSL certificate verification enabled by default for security
+# If you need to disable verification for development, set PYTHONHTTPSVERIFY=0
+# Note: Disabling SSL verification makes the addon vulnerable to MITM attacks
 
 #from .core.checkdeps import HAS_GDAL, HAS_PYPROJ, HAS_PIL, HAS_IMGIO
 from .core.settings import settings

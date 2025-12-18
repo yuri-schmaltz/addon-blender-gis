@@ -1,0 +1,50 @@
+[MASTER]
+# List of plugins
+load-plugins=pylint.extensions.docparams
+jobs=0  # Autodetect number of CPUs
+max-line-length=100
+
+[MESSAGES CONTROL]
+disable=
+    C0114,  # missing-module-docstring
+    C0115,  # missing-class-docstring (noisy for Blender operators)
+    C0116,  # missing-function-docstring (too strict for small functions)
+    R0913,  # too-many-arguments
+    W0212,  # protected-access (common in Blender/Python internals)
+    C0302,  # too-many-lines
+    R0901,  # too-many-ancestors
+    R0904,  # too-many-public-methods
+    C0103,  # invalid-name (allows bpy conventions like bl_idname)
+    W0631,  # undefined-loop-variable
+
+[FORMAT]
+indent-string='    '
+indent-after-paren=4
+
+[DESIGN]
+max-attributes=10
+max-branches=15
+max-returns=6
+max-statements=60
+
+[VARIABLES]
+dummy-variables-rgx=_+$|^unused_|^dummy_
+
+[LOGGING]
+logging-format-style=old
+
+[BASIC]
+good-names=
+    _,
+    i,j,k,
+    x,y,z,
+    W,E,S,N,
+    df,
+    ax,
+    f,
+    q,
+    id,
+    f_obj,
+
+[PYCODESTYLE]
+max-line-length=100

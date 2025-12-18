@@ -108,7 +108,7 @@ class CAMERA_OT_geophotos_add(Operator):
         scn = context.scene
         geoscn = GeoScene(scn)
         if not geoscn.isGeoref:
-            self.report({'ERROR'},"The scene must be georeferenced.")
+            self.report({'ERROR'}, "Scene not georeferenced. Set CRS and origin in GIS properties before importing geotagged photos.")
             return {'CANCELLED'}
         #File browser
         context.window_manager.fileselect_add(self)
@@ -122,19 +122,19 @@ class CAMERA_OT_geophotos_add(Operator):
             filepath = os.path.join(directory, file_elem.name)
 
             if not os.path.isfile(filepath):
-                self.report({'ERROR'},"Invalid file")
+                self.report({'ERROR'}, f"File not found: {filepath}")
                 return {'CANCELLED'}
 
             imgFormat = getImgFormat(filepath)
             if imgFormat not in ['JPEG', 'TIFF']:
-                self.report({'ERROR'},"Invalid format " + str(imgFormat))
+                self.report({'ERROR'}, f"Unsupported format '{imgFormat}'. Only JPEG and TIFF with EXIF are supported.")
                 return {'CANCELLED'}
 
             try:
                 exif = Tyf.open(filepath)
             except Exception as e:
-                log.error("Unable to open file", exc_info=True)
-                self.report({'ERROR'},"Unable to open file. Checks logs for more infos.")
+                log.error("Unable to open EXIF file %s", filepath, exc_info=True)
+                self.report({'ERROR'}, f"Cannot read EXIF data from {os.path.basename(filepath)}. Ensure file has GPS metadata.")
                 return {'CANCELLED'}
 
             #tags = {t.key:exif[t.key] for t in exif.exif.tags() if t.key != 'Unknown' }
@@ -149,7 +149,7 @@ class CAMERA_OT_geophotos_add(Operator):
                 lat = exif["GPSLatitude"] * exif["GPSLatitudeRef"]
                 lon = exif["GPSLongitude"] * exif["GPSLongitudeRef"]
             except KeyError:
-                self.report({'ERROR'},"Can't find GPS longitude or latitude.")
+                self.report({'ERROR'}, f"GPS data missing in {os.path.basename(filepath)}. Ensure camera has GPS enabled.")
                 return {'CANCELLED'}
 
             #alt = exif.get("GPSAltitude", 0)
@@ -161,8 +161,8 @@ class CAMERA_OT_geophotos_add(Operator):
             try:
                 x, y = reprojPt(4326, geoscn.crs, lon, lat)
             except Exception as e:
-                log.error("Reprojection fails", exc_info=True)
-                self.report({'ERROR'},"Reprojection error. Check logs for more infos.")
+                log.error("Reprojection of EXIF coordinates failed", exc_info=True)
+                self.report({'ERROR'}, f"Cannot reproject GPS coordinates from {os.path.basename(filepath)}. Check scene CRS is valid.")
                 return {'CANCELLED'}
 
             try:

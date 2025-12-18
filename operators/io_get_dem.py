@@ -15,6 +15,7 @@ from bpy.props import StringProperty, IntProperty, FloatProperty, BoolProperty, 
 from ..geoscene import GeoScene
 from .utils import adjust3Dview, getBBOX, isTopView
 from ..core.proj import SRS, reprojBbox
+from ..core.utils.resilience import retry_with_backoff, with_circuit_breaker
 
 from ..core import settings
 USER_AGENT = settings.user_agent
@@ -36,14 +37,16 @@ class IMPORTGIS_OT_dem_query(Operator):
 		#check georef
 		geoscn = GeoScene(context.scene)
 		if not geoscn.isGeoref:
-				self.report({'ERROR'}, "Scene is not georef")
+				self.report({'ERROR'}, "Scene is not georeferenced. Please set a valid CRS and origin in GIS properties.")
+				log.warning("DEM query aborted: Scene not georeferenced")
 				return {'CANCELLED'}
 		if geoscn.isBroken:
-				self.report({'ERROR'}, "Scene georef is broken, please fix it beforehand")
+				self.report({'ERROR'}, "Scene georeferencing is broken (partial data). Please fix CRS or origin in GIS properties.")
+				log.warning("DEM query aborted: Broken georeferencing")
 				return {'CANCELLED'}
 
 		#return self.execute(context)
-		return context.window_manager.invoke_props_dialog(self)#, width=350)
+		return context.window_manager.invoke_props_dialog(self)
 
 	def draw(self,context):
 		prefs = context.preferences.addons[PKG].preferences
@@ -79,22 +82,22 @@ class IMPORTGIS_OT_dem_query(Operator):
 			return {'CANCELLED'}
 
 		if bbox.dimensions.x > 1000000 or bbox.dimensions.y > 1000000:
-			self.report({'ERROR'}, "Too large extent")
+			self.report({'ERROR'}, "Query extent too large (>1000 km). Please select a smaller area.")
 			return {'CANCELLED'}
 
 		bbox = reprojBbox(geoscn.crs, 4326, bbox)
 
 		if 'SRTM' in prefs.demServer:
 			if bbox.ymin > 60:
-				self.report({'ERROR'}, "SRTM is not available beyond 60 degrees north")
+				self.report({'ERROR'}, "SRTM unavailable beyond 60°N. Try OpenTopography SRTM 30m or Marine-geo.org instead.")
 				return {'CANCELLED'}
 			if bbox.ymax < -56:
-				self.report({'ERROR'}, "SRTM is not available below 56 degrees south")
+				self.report({'ERROR'}, "SRTM unavailable below 56°S. Try OpenTopography SRTM 30m or Marine-geo.org instead.")
 				return {'CANCELLED'}
 
 		if 'opentopography' in prefs.demServer:
 			if not prefs.opentopography_api_key:
-				self.report({'ERROR'}, "Please register to opentopography.org and request for an API key")
+				self.report({'ERROR'}, "OpenTopography API key required. Register at opentopography.org, request key, and add to BlenderGIS preferences.")
 				return {'CANCELLED'}
 
 		#Set cursor representation to 'loading' icon
@@ -125,15 +128,22 @@ class IMPORTGIS_OT_dem_query(Operator):
 				data = response.read() # a `bytes` object
 				outFile.write(data) #
 		except (URLError, HTTPError) as err:
-			log.error('Http request fails url:{}, code:{}, error:{}'.format(url, getattr(err, 'code', None), err.reason))
-			self.report({'ERROR'}, "Cannot reach OpenTopography web service, check logs for more infos")
+			log.error('HTTP request failed. URL: %s, Code: %s, Error: %s', url, getattr(err, 'code', 'unknown'), err.reason, exc_info=True)
+			error_code = getattr(err, 'code', None)
+			if error_code == 401:
+				self.report({'ERROR'}, "Authentication failed: Invalid or expired API key. Check OpenTopography account.")
+			elif error_code == 429:
+				self.report({'ERROR'}, "Rate limit exceeded: Too many requests. Please retry in a few minutes.")
+			else:
+				self.report({'ERROR'}, f"Cannot reach DEM service (HTTP {error_code}). Check internet connection or try another server.")
 			return {'CANCELLED'}
-		except TimeoutError:
-			log.error('Http request does not respond. url:{}, code:{}, error:{}'.format(url, getattr(err, 'code', None), err.reason))
-			info = "Cannot reach SRTM web service provider, server can be down or overloaded. Please retry later"
-			log.info(info)
-			self.report({'ERROR'}, info)
+		except TimeoutError as err:
+			log.error('HTTP request timeout after %ds. URL: %s', TIMEOUT, url, exc_info=True)
+			self.report({'ERROR'}, f"DEM service timeout ({TIMEOUT}s). Server may be down. Try another provider or retry later.")
 			return {'CANCELLED'}
+		except Exception as err:
+			log.error('Unexpected error downloading DEM', exc_info=True)
+			self.report({'ERROR'}, f"Unexpected error: {str(err)}. Check logs for details.")
 
 		if not onMesh:
 			bpy.ops.importgis.georaster(
