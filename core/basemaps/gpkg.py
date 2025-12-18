@@ -25,6 +25,8 @@ import math
 import datetime
 import sqlite3
 
+from .sqlite_optimizer import SQLiteOptimizer
+
 
 #http://www.geopackage.org/spec/#tiles
 #https://github.com/GitHubRGI/geopackage-python/blob/master/Packaging/tiles2gpkg_parallel.py
@@ -58,6 +60,9 @@ class GeoPackage():
 			#self.insertCRS(4326, "WGS84")
 
 			self.insertTileMatrixSet()
+		
+		# Apply performance optimizations
+		SQLiteOptimizer.optimize_database(self.dbPath)
 
 
 	def isGPKG(self):
